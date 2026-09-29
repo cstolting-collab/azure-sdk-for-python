@@ -314,7 +314,10 @@ class Session(object):  # pylint: disable=too-many-instance-attributes
             )
             self.next_outgoing_id += 1
             self.remote_incoming_window -= 1
-            self.outgoing_window -= 1
+            # outgoing_window is a local policy window. Keep it stable and use
+            # remote_incoming_window to enforce peer-advertised session flow control.
+            # Decrementing it without replenishment eventually produces an invalid
+            # negative uint in a Flow frame on long-lived sessions.
             # TODO: We should probably handle an error at the connection and update state accordingly
             delivery.transfer_state = SessionTransferState.OKAY
 
@@ -323,6 +326,9 @@ class Session(object):  # pylint: disable=too-many-instance-attributes
         self.next_incoming_id += 1
         self.remote_outgoing_window -= 1
         self.incoming_window -= 1
+        refresh_window = self.incoming_window <= 0
+        if refresh_window:
+            self.incoming_window = self.target_incoming_window
         try:
             self._input_handles[frame[0]]._incoming_transfer(frame)  # pylint: disable=protected-access
         except KeyError:
@@ -338,9 +344,9 @@ class Session(object):  # pylint: disable=too-many-instance-attributes
                 )
             )
             return
-        if self.incoming_window == 0:
-            self.incoming_window = self.target_incoming_window
-            self._outgoing_flow()
+        finally:
+            if refresh_window and self.state == SessionState.MAPPED:
+                self._outgoing_flow()
 
     def _outgoing_disposition(self, frame):
         self._connection._process_outgoing_frame(self.channel, frame)  # pylint: disable=protected-access
